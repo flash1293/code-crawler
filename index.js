@@ -21,13 +21,14 @@ function findFiles(dir) {
   });
 }
 
-async function analyze(localPath) {
+async function analyze(localPath, analyzer = () => ({})) {
+  const rootDirDepth = localPath.split(path.sep).length;
   const files = await findFiles(localPath);
   return files
     .filter(file => fileExtensions.indexOf(path.extname(file)) !== -1)
     .map(file => {
       const code = fs.readFileSync(file, { encoding: "utf8" });
-      const dirs = file.split(path.sep).slice(2);
+      const dirs = file.split(path.sep).slice(rootDirDepth);
       const filename = dirs.pop();
       const ext = path.extname(filename);
       const attributes = {
@@ -35,7 +36,8 @@ async function analyze(localPath) {
         isTestFile:
           dirs.includes("__tests__") || filename.indexOf(".test.") > -1,
         ext,
-        filename
+        filename,
+        ...analyzer(code, filename, dirs)
       };
       dirs.forEach((dir, i) => {
         attributes["dir" + i] = dir;
@@ -45,22 +47,44 @@ async function analyze(localPath) {
     });
 }
 
+function getIndexName(repo) {
+  const owner = repo.split("/")[0];
+  const repoName = repo.split("/")[1];
+  return `code-${owner}-${repoName}`;
+}
+
+async function alreadyIndexed(repo, commitHash) {
+  const entries = await client.search({
+    index: getIndexName(repo),
+    ignore_unavailable: true,
+    size: 0,
+    body: {
+      query: {
+        bool: {
+          filter: [{ match: { commitHash } }, { match: { repo } }]
+        }
+      }
+    }
+  });
+
+  return entries.hits.total.value > 0;
+}
+
 const getDocument = (commitHash, commitDate, repo, checkout) => file => {
   return {
     ...file,
     commitHash,
     commitDate,
-	repo,
-	checkout
+    repo,
+    checkout,
+    indexDate: new Date().toISOString()
   };
 };
 
 async function indexFiles(files, repo) {
   const body = [];
-  const owner = repo.split('/')[0];
-  const repoName = repo.split('/')[1];
   files.forEach(file => {
-    body.push({ index: { _index: `code-${owner}-${repoName}`, _type: "_doc" } });
+    body.push({ index: { _index: getIndexName(repo), _type: "_doc" } });
     body.push(file);
   });
   await client.bulk({
@@ -69,22 +93,33 @@ async function indexFiles(files, repo) {
 }
 
 async function main() {
-  for (const { repo, checkouts } of config.repos) {
-    console.log(`Cloning current ${repo}`);
+  for (const { repo, checkouts, analyzer } of config.repos) {
     const tmpDir = tmp.dirSync();
-    console.log(`Using ${tmpDir.name}`);
+    console.log(`Processing ${repo}, using ${tmpDir.name}`);
     const currentGit = git(tmpDir.name);
-	await currentGit.clone(`https://github.com/${repo}.git`, tmpDir.name);
-	for(const checkout of checkouts) {
-		console.log(`Indexing current state of ${checkout}`);
-		await currentGit.checkout(checkout);
-		const commitHash = await currentGit.raw(["rev-parse", "HEAD"]);
-		const commitDate = new Date(await currentGit.raw(["log", "-1", "--format=%cd"])).toISOString();
-		const files = (await analyze(tmpDir.name)).map(
-		getDocument(commitHash, commitDate, repo, checkout)
-		);
-		await indexFiles(files, repo);
-	}
+    try {
+      await currentGit.clone(`https://github.com/${repo}.git`, tmpDir.name);
+      for (const checkout of checkouts) {
+        console.log(`Indexing current state of ${checkout}`);
+        await currentGit.checkout(checkout);
+        const commitHash = await currentGit.raw(["rev-parse", "HEAD"]);
+        const commitDate = new Date(
+          await currentGit.raw(["log", "-1", "--format=%cd"])
+        ).toISOString();
+        if (await alreadyIndexed(repo, commitHash)) {
+          console.log(
+            `${repo} ${checkout} (${commitHash}) already indexed, skipping`
+          );
+          continue;
+        }
+        const files = (await analyze(tmpDir.name, analyzer)).map(
+          getDocument(commitHash, commitDate, repo, checkout)
+        );
+        await indexFiles(files, repo);
+      }
+    } catch (e) {
+      console.log(`Indexing ${repo} failed: `, e);
+    }
     tmpDir.removeCallback();
   }
 }
