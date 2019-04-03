@@ -1,7 +1,7 @@
 const repos = [
   {
     repo: "elastic/kibana",
-    checkouts: ["master"],
+    checkouts: ["master", "6.7", "7.0", "7.x"],
     analyzer: function(code, filename, dirs) {
       const angularTakeaways = [
         "uiModules",

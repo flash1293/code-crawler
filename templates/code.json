@@ -1,0 +1,123 @@
+{
+  "index_patterns": ["code-*"],
+  "settings": {
+    "number_of_shards": "1"
+  },
+  "mappings": {
+    "doc": {
+      "properties": {
+        "block": {
+          "type": "long"
+        },
+        "blockEmpty": {
+          "type": "long"
+        },
+        "checkout": {
+          "type": "keyword"
+        },
+        "comment": {
+          "type": "long"
+        },
+        "commitDate": {
+          "type": "date"
+        },
+        "commitHash": {
+          "type": "keyword"
+        },
+        "dir0": {
+          "type": "keyword"
+        },
+        "dir1": {
+          "type": "keyword"
+        },
+        "dir10": {
+          "type": "keyword"
+        },
+        "dir11": {
+          "type": "keyword"
+        },
+        "dir12": {
+          "type": "keyword"
+        },
+        "dir13": {
+          "type": "keyword"
+        },
+        "dir14": {
+          "type": "keyword"
+        },
+        "dir15": {
+          "type": "keyword"
+        },
+        "dir16": {
+          "type": "keyword"
+        },
+        "dir17": {
+          "type": "keyword"
+        },
+        "dir18": {
+          "type": "keyword"
+        },
+        "dir2": {
+          "type": "keyword"
+        },
+        "dir3": {
+          "type": "keyword"
+        },
+        "dir4": {
+          "type": "keyword"
+        },
+        "dir5": {
+          "type": "keyword"
+        },
+        "dir6": {
+          "type": "keyword"
+        },
+        "dir7": {
+          "type": "keyword"
+        },
+        "dir8": {
+          "type": "keyword"
+        },
+        "dir9": {
+          "type": "keyword"
+        },
+        "empty": {
+          "type": "long"
+        },
+        "ext": {
+          "type": "keyword"
+        },
+        "filename": {
+          "type": "keyword"
+        },
+        "hasAngular": {
+          "type": "boolean"
+        },
+        "hasUiPublic": {
+          "type": "boolean"
+        },
+        "isTestFile": {
+          "type": "boolean"
+        },
+        "mixed": {
+          "type": "long"
+        },
+        "repo": {
+          "type": "keyword"
+        },
+        "single": {
+          "type": "long"
+        },
+        "source": {
+          "type": "long"
+        },
+        "todo": {
+          "type": "long"
+        },
+        "total": {
+          "type": "long"
+        }
+      }
+    }
+  }
+}
