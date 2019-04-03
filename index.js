@@ -1,200 +1,92 @@
-const config = require('./config.js');
+const config = require("./config.js");
 
-const octokit = require('@octokit/rest')();
-const elasticsearch = require('elasticsearch');
-const moment = require('moment');
+const tmp = require("tmp");
+const sloc = require("sloc");
+const fs = require("fs");
+const path = require("path");
+const find = require("find");
+const elasticsearch = require("elasticsearch");
 
-const CACHE_INDEX = 'cache';
+const git = require("simple-git/promise");
 
 const client = new elasticsearch.Client(config.elasticsearch);
 
-octokit.authenticate(config.githubAuth);
+const fileExtensions = [".js", ".ts", ".jsx", ".tsx", ".html", ".css", ".scss"];
 
-/**
- * Enhace a passed in date, into an object that contains further useful
- * information about that date (e.g. day of the week or hour of day).
- */
-function enhanceDate(date) {
-	if (!date) return null;
-
-	const m = moment(date);
-	return {
-		time: m.format(),
-		weekday: m.format('ddd'),
-		weekday_number: parseInt(m.format('d')),
-		hour_of_day: parseInt(m.format('H'))
-	};
+function findFiles(dir) {
+  return new Promise(resolve => {
+    find.file(dir, files => {
+      resolve(files);
+    });
+  });
 }
 
-/**
- * Takes in the raw issue from the GitHub API response and must return the
- * object that should be stored inside Elasticsearch.
- */
-function convertIssue(owner, repo, raw) {
-	const time_to_fix = (raw.created_at && raw.closed_at) ?
-			moment(raw.closed_at).diff(moment(raw.created_at)) :
-			null;
-	return {
-		id: raw.id,
-		owner: owner,
-		repo: repo,
-		state: raw.state,
-		title: raw.title,
-		number: raw.number,
-		url: raw.url,
-		locked: raw.locked,
-		comments: raw.comments,
-		created_at: enhanceDate(raw.created_at),
-		updated_at: enhanceDate(raw.updated_at),
-		closed_at: enhanceDate(raw.closed_at),
-		author_association: raw.author_association,
-		user: raw.user.login,
-		body: raw.body,
-		labels: raw.labels.map(label => label.name),
-		is_pullrequest: !!raw.pull_request,
-		assignees: !raw.assignees ? null : raw.assignees.map(a => a.login),
-		reactions: !raw.reactions ? null : {
-			total: raw.reactions.total_count,
-			upVote: raw.reactions['+1'],
-			downVote: raw.reactions['-1'],
-			laugh: raw.reactions.laugh,
-			hooray: raw.reactions.hooray,
-			confused: raw.reactions.confused,
-			heart: raw.reactions.hearts,
-		},
-		time_to_fix: time_to_fix,
-	};
+async function analyze(localPath) {
+  const files = await findFiles(localPath);
+  return files
+    .filter(file => fileExtensions.indexOf(path.extname(file)) !== -1)
+    .map(file => {
+      const code = fs.readFileSync(file, { encoding: "utf8" });
+      const dirs = file.split(path.sep).slice(2);
+      const filename = dirs.pop();
+      const ext = path.extname(filename);
+      const attributes = {
+        ...sloc(code, ext.substr(1)),
+        isTestFile:
+          dirs.includes("__tests__") || filename.indexOf(".test.") > -1,
+        ext,
+        filename
+      };
+      dirs.forEach((dir, i) => {
+        attributes["dir" + i] = dir;
+      });
+
+      return attributes;
+    });
 }
 
-/**
- * Create a bulk request body for all issues. You need to specify the index in
- * which these issues should be stored.
- */
-function getIssueBulkUpdates(index, issues) {
-	return [].concat(...issues.map(issue => [
-		{ index: { _index: index, _type: 'doc', _id: issue.id }},
-		issue
-	]));
-}
+const getDocument = (commitHash, commitDate, repo, checkout) => file => {
+  return {
+    ...file,
+    commitHash,
+    commitDate,
+	repo,
+	checkout
+  };
+};
 
-/**
- * Returns the bulk request body to update the cache key for the specified repo
- * and page.
- */
-function getCacheKeyUpdate(owner, repo, page, key) {
-	const id = `${owner}_${repo}_${page}`
-	return [
-		{ index: { _index: CACHE_INDEX, _type: 'doc', _id: id }},
-		{ owner, repo, page, key }
-	];
-}
-
-/**
- * Processes a GitHub response for the specified page of issues.
- * This will convert all issues to the desired format, store them into
- * Elasticsearch and update the cache key, we got from GitHub.
- */
-async function processGitHubIssues(owner, repo, response, page) {
-	console.log(`Found ${response.data.length} issues`);
-	if (response.data.length > 0) {
-		const issues = response.data.map(issue => convertIssue(owner, repo, issue));
-		const bulkIssues = getIssueBulkUpdates(`issues-${owner}-${repo}`, issues);
-		const updateCacheKey = getCacheKeyUpdate(owner, repo, page, response.meta.etag);
-		const body = [...bulkIssues, ...updateCacheKey];
-		console.log('Writing issues and new cache key to Elasticsearch');
-		await client.bulk({ body });
-	}
-}
-
-/**
- * Load the existing cache for the specified repository. The result will be
- * in the format { [pageNr]: 'cacheKey' }.
- */
-async function loadCacheForRepo(owner, repo) {
-	const entries = await client.search({
-		index: CACHE_INDEX,
-		_source: ['page', 'key'],
-		size: 10000,
-		body: {
-			query: {
-				bool: {
-					filter: [
-						{ match: { owner } },
-						{ match: { repo } }
-					]
-				}
-			}
-		}
-	});
-
-	if (entries.hits.total === 0) {
-		return {};
-	}
-
-	return entries.hits.hits.reduce((cache, entry) => {
-		cache[entry._source.page] = entry._source.key;
-		return cache;
-	}, {});
+async function indexFiles(files, repo) {
+  const body = [];
+  const owner = repo.split('/')[0];
+  const repoName = repo.split('/')[1];
+  files.forEach(file => {
+    body.push({ index: { _index: `code-${owner}-${repoName}`, _type: "_doc" } });
+    body.push(file);
+  });
+  await client.bulk({
+    body
+  });
 }
 
 async function main() {
-	const requestErrorIds = [];
-	let errorCount = 0;
-
-	await Promise.all(config.repos.map(async (repository) => {
-		console.log(`Processing repository ${repository}`);
-		const [ owner, repo ] = repository.split('/');
-
-		const cache = await loadCacheForRepo(owner, repo);
-
-		let page = 0;
-		let shouldCheckNextPage = true;
-		while(shouldCheckNextPage) {
-			page++;
-			console.log(`Requesting issues page ${page} for ${repository} (using etag ${cache[page]})`)
-			try {
-				const headers = cache[page] ? { 'If-None-Match': cache[page] } : {};
-				const response = await octokit.issues.getForRepo({
-					owner,
-					repo,
-					page,
-					per_page: 100,
-					state: 'all',
-					sort: 'created',
-					direction: 'asc',
-					headers: headers
-				});
-				console.log('Remaining request limit: %s/%s',
-					response.meta['x-ratelimit-remaining'],
-					response.meta['x-ratelimit-limit']
-				);
-				await processGitHubIssues(owner, repo, response, page);
-				shouldCheckNextPage = octokit.hasNextPage(response);
-			} catch (error) {
-				if (error.name === 'HttpError' && error.code === 304) {
-					// Ignore not modified responses and continue with the next page.
-					console.log('Page was not modified. Continue with next page.');
-					continue;
-				} else {
-					// Since the GitHub API seem to fail very often, we just log out failures,
-					// but continue with the next page.
-					console.log(error);
-					if (error.headers && error.headers['x-github-request-id']) {
-						requestErrorIds.push(error.headers['x-github-request-id']);
-					}
-					errorCount++;
-				}
-			}
-		}
-	}));
-
-	if (errorCount > 0) {
-		console.log('------ ERROR REPORT -------');
-		console.log(`Failed requests: ${errorCount}`);
-		console.log(`Failed request ids:`);
-		console.log(requestErrorIds.join('\n'));
-		process.exit(1);
+  for (const { repo, checkouts } of config.repos) {
+    console.log(`Cloning current ${repo}`);
+    const tmpDir = tmp.dirSync();
+    console.log(`Using ${tmpDir.name}`);
+    const currentGit = git(tmpDir.name);
+	await currentGit.clone(`https://github.com/${repo}.git`, tmpDir.name);
+	for(const checkout of checkouts) {
+		console.log(`Indexing current state of ${checkout}`);
+		await currentGit.checkout(checkout);
+		const commitHash = await currentGit.raw(["rev-parse", "HEAD"]);
+		const commitDate = new Date(await currentGit.raw(["log", "-1", "--format=%cd"])).toISOString();
+		const files = (await analyze(tmpDir.name)).map(
+		getDocument(commitHash, commitDate, repo, checkout)
+		);
+		await indexFiles(files, repo);
 	}
+    tmpDir.removeCallback();
+  }
 }
 
 main();
