@@ -67,7 +67,8 @@ async function alreadyIndexed(repo, commitHash) {
     }
   });
 
-  return entries.hits.total.value > 0;
+  // TODO check whether this is necessary (different ES versions?)
+  return entries.hits.total > 0 || entries.hits.total.value > 0;
 }
 
 const getDocument = (commitHash, commitDate, repo, checkout) => file => {
@@ -93,7 +94,7 @@ async function indexFiles(files, repo) {
 }
 
 async function main() {
-  for (const { repo, checkouts, analyzer } of config.repos) {
+  for (const { repo, checkouts, checkoutAs, analyzer } of config.repos) {
     const tmpDir = tmp.dirSync();
     console.log(`Processing ${repo}, using ${tmpDir.name}`);
     const currentGit = git(tmpDir.name);
@@ -113,7 +114,7 @@ async function main() {
           continue;
         }
         const files = (await analyze(tmpDir.name, analyzer)).map(
-          getDocument(commitHash, commitDate, repo, checkout)
+          getDocument(commitHash, commitDate, repo, checkoutAs || checkout)
         );
         await indexFiles(files, repo);
       }
