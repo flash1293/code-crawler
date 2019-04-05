@@ -1,7 +1,7 @@
 const repos = [
   {
     repo: "elastic/kibana",
-    checkouts: ["master", "6.7", "7.0", "7.x"],
+    checkouts: ["master"],
     analyzer: function(code, filename, dirs) {
       const angularTakeaways = [
         "uiModules",
@@ -9,7 +9,8 @@ const repos = [
         ".service(",
         ".controller(",
         "$scope",
-        "Private("
+        "Private(",
+        "dangerouslyGetActiveInjector",
       ];
       return {
         hasAngular: angularTakeaways.some(searchString =>
