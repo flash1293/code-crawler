@@ -24,6 +24,12 @@
         "commitHash": {
           "type": "keyword"
         },
+        "fullFilename": {
+          "type": "keyword"
+        },
+        "dirs": {
+          "type": "keyword"
+        },
         "dir0": {
           "type": "keyword"
         },

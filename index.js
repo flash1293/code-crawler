@@ -30,13 +30,15 @@ async function analyze(localPath, analyzer = () => ({})) {
       const code = fs.readFileSync(file, { encoding: "utf8" });
       const dirs = file.split(path.sep).slice(rootDirDepth);
       const filename = dirs.pop();
-      const ext = path.extname(filename);
+      const ext = path.extname(filename).slice(1);
       const attributes = {
-        ...sloc(code, ext.substr(1)),
+        ...sloc(code, ext),
         isTestFile:
           dirs.includes("__tests__") || filename.indexOf(".test.") > -1,
         ext,
         filename,
+        dirs: dirs.join(path.sep),
+        fullFilename: [...dirs, filename].join(path.sep),
         ...analyzer(code, filename, dirs)
       };
       dirs.forEach((dir, i) => {
